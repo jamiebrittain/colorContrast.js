@@ -4,7 +4,7 @@ Analyze CSS color contrast, check WCAG compliance, and choose accessible foregro
 
 ## Install
 
-After publication:
+Available on npm as [`color-contrast-js`](https://www.npmjs.com/package/color-contrast-js):
 
 ```sh
 npm install color-contrast-js
