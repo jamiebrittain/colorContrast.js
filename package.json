@@ -1,0 +1,66 @@
+{
+  "name": "color-contrast-js",
+  "version": "2.0.0",
+  "description": "Analyze CSS color contrast and choose accessible foreground colors.",
+  "type": "module",
+  "main": "./color-contrast.js",
+  "types": "./index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./index.d.ts",
+      "import": "./color-contrast.js",
+      "default": "./color-contrast.js"
+    },
+    "./min": {
+      "types": "./index.d.ts",
+      "import": "./color-contrast.min.js",
+      "default": "./color-contrast.min.js"
+    }
+  },
+  "sideEffects": false,
+  "files": [
+    "color-contrast.js",
+    "color-contrast.min.js",
+    "index.d.ts",
+    "API.md",
+    "CHANGELOG.md",
+    "THIRD_PARTY_NOTICES.md"
+  ],
+  "scripts": {
+    "build": "node scripts/build.js",
+    "check": "node --check color-contrast.js && node --check color-contrast.min.js && node --check jquery.colourbrightness.js && node --check jquery.colourbrightness.min.js && npm run check:types && node --test",
+    "check:types": "tsc",
+    "test": "node --test",
+    "prepack": "npm run build && npm run check"
+  },
+  "keywords": [
+    "colour",
+    "color",
+    "brightness",
+    "contrast",
+    "accessibility",
+    "wcag",
+    "luminance",
+    "palette",
+    "oklch"
+  ],
+  "author": "Jamie Brittain",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/jamiebrittain/colorContrast.js.git"
+  },
+  "bugs": {
+    "url": "https://github.com/jamiebrittain/colorContrast.js/issues"
+  },
+  "homepage": "https://github.com/jamiebrittain/colorContrast.js#readme",
+  "engines": {
+    "node": ">=22"
+  },
+  "devDependencies": {
+    "culori": "^4.0.2",
+    "esbuild": "^0.28.1",
+    "terser": "^5.49.0",
+    "typescript": "^7.0.2"
+  }
+}
