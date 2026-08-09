@@ -8,6 +8,7 @@ const {
   applyColourBrightness,
   analyzeColor,
   analyzeElement,
+  analyzeGradient,
   analyzePalette,
   bestTextColor,
   backgroundTone,
@@ -16,9 +17,11 @@ const {
   contrastMatrix,
   contrastRatio,
   getBackgroundColour,
+  gradientTone,
   meetsContrast,
   parseColor,
   parseColour,
+  parseGradient,
 } = readableBuild;
 
 function element(backgroundColor, parentElement = null) {
@@ -27,6 +30,7 @@ function element(backgroundColor, parentElement = null) {
     defaultView: {
       getComputedStyle: (target) => ({
         backgroundColor: target.backgroundColor,
+        backgroundImage: target.backgroundImage ?? "none",
         color: target.color ?? "rgb(0, 0, 0)",
         fontSize: target.fontSize ?? "16px",
         fontWeight: target.fontWeight ?? "400",
@@ -139,6 +143,85 @@ test("composites colors and analyzes palettes", () => {
   assert.equal(matrix[2][2], 1);
 });
 
+test("parses gradient color stops", () => {
+  assert.deepEqual(
+    parseGradient("linear-gradient(45deg, rgb(51, 102, 153) 0%, tomato)"),
+    { type: "linear", repeating: false, colors: ["rgb(51, 102, 153)", "tomato"] },
+  );
+  assert.deepEqual(
+    parseGradient(
+      "repeating-conic-gradient(from 45deg at 50% 50%, #000 0deg, #fff 180deg)",
+    ),
+    { type: "conic", repeating: true, colors: ["#000", "#fff"] },
+  );
+  assert.deepEqual(
+    parseGradient("radial-gradient(circle at center, red, 30%, blue 100%)")
+      .colors,
+    ["red", "blue"],
+  );
+  assert.deepEqual(
+    parseGradient("linear-gradient(in oklab, red 0% 50%, blue)").colors,
+    ["red", "blue"],
+  );
+  assert.equal(parseGradient("#fff"), null);
+  assert.equal(parseGradient('url("pattern.png")'), null);
+  assert.equal(parseGradient("linear-gradient(red, blue), url(x.png)"), null);
+  assert.equal(parseGradient("linear-gradient(45deg)"), null);
+  assert.equal(parseGradient(42), null);
+});
+
+test("analyzes gradients using the worst-case stop", () => {
+  const mixed = analyzeGradient("linear-gradient(90deg, #000, #fff)");
+  assert.equal(mixed.type, "linear");
+  assert.equal(mixed.backgroundTone, "mixed");
+  assert.equal(mixed.stops.length, 2);
+  assert.equal(mixed.contrastWithBlack, 1);
+  assert.equal(mixed.contrastWithWhite, 1);
+  assert.equal(mixed.blackText.aa, false);
+  assert.equal(mixed.whiteText.aa, false);
+
+  const light = analyzeGradient("linear-gradient(#fff, #ff0)");
+  assert.equal(light.backgroundTone, "light");
+  assert.equal(light.recommendedTextColor, "#000000");
+  assert.equal(light.blackText.aa, true);
+
+  assert.equal(gradientTone("linear-gradient(#fff, #000)"), "mixed");
+  assert.equal(gradientTone("linear-gradient(#111, #333)"), "dark");
+  assert.equal(
+    analyzeGradient("linear-gradient(rgb(0 0 0 / 50%), #000)").stops[0]
+      .resolvedColor,
+    "rgb(128, 128, 128)",
+  );
+  assert.throws(() => analyzeGradient("#fff"), /Unsupported gradient/);
+});
+
+test("contrast utilities accept gradient backgrounds", () => {
+  assert.equal(contrastRatio("#000", "linear-gradient(#fff, #fff)"), 21);
+  assert.equal(contrastRatio("#000", "linear-gradient(45deg, #fff, #000)"), 1);
+  assert.equal(
+    contrastRatio("#000", "linear-gradient(rgb(255 255 255 / 50%), #fff)", {
+      fallback: "#fff",
+    }),
+    21,
+  );
+  assert.equal(
+    bestTextColor("linear-gradient(#336699, #113355)"),
+    "#FFFFFF",
+  );
+  assert.equal(
+    meetsContrast("#fff", "linear-gradient(#336699, #113355)"),
+    true,
+  );
+  assert.equal(
+    meetsContrast("#000", "linear-gradient(#336699, #113355)"),
+    false,
+  );
+  assert.throws(
+    () => contrastRatio("linear-gradient(#000, #fff)", "#fff"),
+    TypeError,
+  );
+});
+
 test("resolves transparent backgrounds through element ancestors", () => {
   const root = element("rgb(255, 255, 255)");
   const parent = element("rgba(0, 0, 0, 0.5)", root);
@@ -173,6 +256,53 @@ test("applies a result independently to every selected element", () => {
   assert.equal(dark.classList.contains("light"), false);
   assert.equal(light.classList.contains("light"), true);
   assert.equal(light.classList.contains("dark"), false);
+});
+
+test("analyzes gradient background layers on elements", () => {
+  const parent = element("rgb(0, 0, 0)");
+  const child = element("rgba(0, 0, 0, 0)", parent);
+  child.backgroundImage =
+    "linear-gradient(rgb(255 255 255 / 50%), rgb(255, 255, 255))";
+  child.color = "rgb(0, 0, 0)";
+
+  const result = analyzeElement(child);
+  assert.equal(result.backgroundColor, "rgb(0, 0, 0)");
+  assert.deepEqual(result.backgroundColors, [
+    "rgb(128, 128, 128)",
+    "rgb(255, 255, 255)",
+  ]);
+  assert.deepEqual(result.unsupportedBackgrounds, []);
+  assert.equal(
+    result.contrastRatio,
+    contrastRatio("#000", "rgb(128, 128, 128)"),
+  );
+  assert.equal(getBackgroundColour(child), "rgb(0, 0, 0)");
+});
+
+test("reports unsupported background image layers", () => {
+  const sample = element("rgb(255, 255, 255)");
+  sample.backgroundImage =
+    'url("texture.png"), linear-gradient(rgb(0, 0, 0), rgb(34, 34, 34))';
+  sample.color = "rgb(255, 255, 255)";
+
+  const result = analyzeElement(sample);
+  assert.deepEqual(result.unsupportedBackgrounds, ['url("texture.png")']);
+  assert.deepEqual(result.backgroundColors, [
+    "rgb(0, 0, 0)",
+    "rgb(34, 34, 34)",
+  ]);
+  assert.equal(result.aa, true);
+});
+
+test("applies tone classes using gradient layers", () => {
+  const onGradient = element("rgb(255, 255, 255)");
+  onGradient.backgroundImage =
+    "linear-gradient(rgb(20, 20, 20), rgb(0, 0, 60))";
+
+  applyColourBrightness([onGradient]);
+
+  assert.equal(onGradient.classList.contains("dark"), true);
+  assert.equal(onGradient.classList.contains("light"), false);
 });
 
 test("analyzes an element using the applicable WCAG text size", () => {

@@ -52,6 +52,19 @@ compositeColors("rgb(0 0 0 / 50%)", "#fff");
 // "rgb(128, 128, 128)"
 ```
 
+Gradients are analyzed at every color stop, so a passing result holds anywhere on the gradient:
+
+```js
+gradientTone("linear-gradient(#111, #333)"); // "dark"
+gradientTone("linear-gradient(#000, #fff)"); // "mixed"
+
+contrastRatio("#fff", "linear-gradient(#336699, #113355)");
+// ≈ 6 — the weakest stop
+
+meetsContrast("#fff", "linear-gradient(#336699, #113355)"); // true
+bestTextColor("linear-gradient(45deg, #336699, #113355)"); // "#FFFFFF"
+```
+
 Analyze an element using its computed foreground, composited background, font size, and font weight:
 
 ```js
@@ -83,6 +96,9 @@ applyBackgroundTone(".sample", {
 | `meetsContrast(foreground, background, options)` | Check WCAG AA or AAA |
 | `compositeColors(foreground, background)` | Resolve the visible result of transparency |
 | `parseColor(color)` | Parse a CSS color into RGBA channels |
+| `parseGradient(gradient)` | Extract the color stops from a CSS gradient |
+| `analyzeGradient(gradient, options)` | Analyze every stop and report the worst case |
+| `gradientTone(gradient, options)` | Classify a gradient as `"light"`, `"dark"`, or `"mixed"` |
 | `analyzePalette(colors, options)` | Analyze every color in a palette |
 | `contrastMatrix(colors, options)` | Calculate all palette contrast pairs |
 | `getBackgroundColor(element, options)` | Resolve a composited DOM background |
@@ -99,8 +115,11 @@ The historical `colorBrightness`, `colourBrightness`, `applyColorBrightness`, an
 - CSS named colors such as `tomato`
 - `lab()`, `lch()`, `oklab()`, and `oklch()`
 - `color()` spaces including sRGB, linear sRGB, Display P3, A98 RGB, ProPhoto RGB, Rec. 2020, and XYZ
+- `linear-gradient()`, `radial-gradient()`, and `conic-gradient()`, including `repeating-` variants
 
 Wide-gamut colors are converted to sRGB and clipped to the sRGB gamut before the WCAG 2 contrast calculation. Alpha values and CSS percentage syntax are supported.
+
+Gradients are evaluated at their color stops — the standard conservative heuristic, since a gradient has no single contrast ratio — and results report the worst case. `contrastRatio`, `meetsContrast`, and `bestTextColor` accept gradients as backgrounds, `analyzeElement` and `applyBackgroundTone` account for gradient `background-image` layers, and `analyzeGradient` provides the full per-stop breakdown. `url()` background images cannot be analyzed; `analyzeElement` lists them in `unsupportedBackgrounds`, and a scrim or solid panel behind the text remains the reliable pattern for text over images.
 
 ## Which build should I use?
 
