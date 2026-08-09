@@ -1,4 +1,4 @@
-/*! colorContrast.js v2.0.0 | MIT | includes Culori (MIT) */
+/*! colorContrast.js v2.1.0 | MIT | includes Culori (MIT) */
 
 // node_modules/culori/src/rgb/parseNumber.js
 var parseNumber = (color, len) => {
@@ -1902,6 +1902,48 @@ function parseColor(value) {
     a: clamp(rgb.alpha ?? 1)
   };
 }
+var GRADIENT_PATTERN = /^(repeating-)?(linear|radial|conic)-gradient\((.*)\)$/is;
+function splitTopLevel(value, isSeparator) {
+  const parts = [];
+  let depth = 0;
+  let start = 0;
+  for (let index = 0; index < value.length; index += 1) {
+    const character = value[index];
+    if (character === "(") depth += 1;
+    else if (character === ")") {
+      depth -= 1;
+      if (depth < 0) return null;
+    } else if (depth === 0 && isSeparator(character)) {
+      parts.push(value.slice(start, index));
+      start = index + 1;
+    }
+  }
+  if (depth !== 0) return null;
+  parts.push(value.slice(start));
+  return parts.map((part) => part.trim()).filter((part) => part !== "");
+}
+var splitArguments = (value) => splitTopLevel(value, (c2) => c2 === ",");
+var splitTokens = (value) => splitTopLevel(value, (c2) => /\s/.test(c2));
+function parseGradient(value) {
+  if (typeof value !== "string") return null;
+  const match = GRADIENT_PATTERN.exec(value.trim());
+  if (!match) return null;
+  const [, repeating, type, body] = match;
+  const parts = splitArguments(body);
+  if (!parts) return null;
+  const colors = [];
+  for (const part of parts) {
+    const color = splitTokens(part)?.find((token) => parseColor(token));
+    if (color !== void 0) colors.push(color);
+  }
+  if (colors.length === 0) return null;
+  return { type: type.toLowerCase(), repeating: Boolean(repeating), colors };
+}
+function requireGradient(value, label = "gradient") {
+  const parsed = parseGradient(value);
+  if (!parsed) throw new TypeError(`Unsupported ${label}: ${value}`);
+  return parsed;
+}
 function requireColor(value, label = "color") {
   const parsed = typeof value === "string" ? parseColor(value) : value;
   const validChannels = parsed !== null && typeof parsed === "object" && [parsed.r, parsed.g, parsed.b, parsed.a].every(Number.isFinite) && parsed.r >= 0 && parsed.r <= 255 && parsed.g >= 0 && parsed.g <= 255 && parsed.b >= 0 && parsed.b <= 255 && parsed.a >= 0 && parsed.a <= 1;
@@ -1969,6 +2011,14 @@ function compositeColors(foreground, background) {
   );
 }
 function contrastRatio(foreground, background, { fallback = "#fff" } = {}) {
+  const gradient = parseGradient(background);
+  if (gradient) {
+    return Math.min(
+      ...gradient.colors.map(
+        (stop) => contrastRatio(foreground, stop, { fallback })
+      )
+    );
+  }
   const resolvedBackground = resolveColor(background, fallback);
   const parsedForeground = requireColor(foreground, "foreground color");
   const resolvedForeground = parsedForeground.a < 1 ? composite(parsedForeground, resolvedBackground) : parsedForeground;
@@ -2017,6 +2067,33 @@ function contrastMatrix(colors, options) {
     (foreground) => colors.map((background) => contrastRatio(foreground, background, options))
   );
 }
+function analyzeGradient(gradient, options) {
+  const { type, repeating, colors } = requireGradient(gradient);
+  const stops = colors.map((color) => analyzeColor(color, options));
+  const contrastWithBlack = Math.min(
+    ...stops.map((stop) => stop.contrastWithBlack)
+  );
+  const contrastWithWhite = Math.min(
+    ...stops.map((stop) => stop.contrastWithWhite)
+  );
+  const useBlack = contrastWithBlack >= contrastWithWhite;
+  const tones = new Set(stops.map((stop) => stop.backgroundTone));
+  return {
+    gradient,
+    type,
+    repeating,
+    stops,
+    backgroundTone: tones.size === 1 ? stops[0].backgroundTone : "mixed",
+    recommendedTextColor: useBlack ? "#000000" : "#FFFFFF",
+    contrastWithBlack,
+    contrastWithWhite,
+    blackText: compliance(contrastWithBlack),
+    whiteText: compliance(contrastWithWhite)
+  };
+}
+function gradientTone(gradient, options) {
+  return analyzeGradient(gradient, options).backgroundTone;
+}
 function styleReaderFor(element) {
   const view = element.ownerDocument?.defaultView;
   const getStyle = view?.getComputedStyle ?? globalThis.getComputedStyle;
@@ -2025,36 +2102,83 @@ function styleReaderFor(element) {
   }
   return getStyle.bind(view ?? globalThis);
 }
-function getBackgroundColor(element, { fallback = "#fff" } = {}) {
-  const getStyle = styleReaderFor(element);
+function backgroundLayers(element, getStyle) {
   const layers = [];
+  const unsupported = [];
+  let sawOpaque = false;
   let current = element;
   while (current) {
-    const color = parseColor(getStyle(current).backgroundColor);
+    const style = getStyle(current);
+    for (const image of splitArguments(style.backgroundImage ?? "none") ?? []) {
+      const gradient = parseGradient(image);
+      if (gradient) layers.push({ stops: gradient.colors.map(parseColor) });
+      else if (image !== "none") unsupported.push(image);
+    }
+    const color = parseColor(style.backgroundColor);
     if (color && color.a > 0) {
-      layers.push(color);
-      if (color.a === 1) break;
+      layers.push({ color });
+      if (color.a === 1) {
+        sawOpaque = true;
+        break;
+      }
     }
     current = current.parentElement;
   }
-  if (!layers.some(({ a }) => a === 1)) layers.push(opaqueFallback(fallback));
-  return cssColor(layers.reverse().reduce(
-    (background, layer) => composite(layer, background)
-  ));
+  return { layers, unsupported, sawOpaque };
+}
+function resolveBackgrounds(element, fallback) {
+  const getStyle = styleReaderFor(element);
+  const { layers, unsupported, sawOpaque } = backgroundLayers(element, getStyle);
+  if (!sawOpaque) layers.push({ color: opaqueFallback(fallback) });
+  let base = null;
+  let candidates = null;
+  for (const layer of layers.reverse()) {
+    if (layer.color) {
+      base = base ? composite(layer.color, base) : layer.color;
+      candidates = candidates ? candidates.map((below) => composite(layer.color, below)) : [layer.color];
+    } else {
+      candidates = candidates.flatMap(
+        (below) => layer.stops.map((stop) => composite(stop, below))
+      );
+    }
+  }
+  const seen = /* @__PURE__ */ new Set();
+  const backgroundColors = [];
+  for (const candidate of candidates) {
+    const color = cssColor(candidate);
+    if (!seen.has(color)) {
+      seen.add(color);
+      backgroundColors.push(color);
+    }
+  }
+  return {
+    backgroundColor: cssColor(base),
+    backgroundColors,
+    unsupportedBackgrounds: unsupported
+  };
+}
+function getBackgroundColor(element, { fallback = "#fff" } = {}) {
+  return resolveBackgrounds(element, fallback).backgroundColor;
 }
 function analyzeElement(element, { fallback = "#fff" } = {}) {
   const style = styleReaderFor(element)(element);
   const foregroundColor = style.color;
-  const backgroundColor = getBackgroundColor(element, { fallback });
+  const { backgroundColor, backgroundColors, unsupportedBackgrounds } = resolveBackgrounds(element, fallback);
   const fontSize = Number.parseFloat(style.fontSize);
   const numericWeight = Number.parseInt(style.fontWeight, 10);
   const fontWeight = Number.isFinite(numericWeight) ? numericWeight : style.fontWeight === "bold" || style.fontWeight === "bolder" ? 700 : 400;
   const isLargeText = fontSize >= LARGE_TEXT_MIN_PX || fontSize >= LARGE_BOLD_TEXT_MIN_PX && fontWeight >= 700;
   const textSize = isLargeText ? "large" : "normal";
-  const ratio = contrastRatio(foregroundColor, backgroundColor, { fallback });
+  const ratio = Math.min(
+    ...backgroundColors.map(
+      (background) => contrastRatio(foregroundColor, background, { fallback })
+    )
+  );
   return {
     foregroundColor,
     backgroundColor,
+    backgroundColors,
+    unsupportedBackgrounds,
     fontSize,
     fontWeight,
     textSize,
@@ -2081,15 +2205,22 @@ function applyBackgroundTone(target, {
   }
   const elements = elementsFrom(target, root);
   for (const element of elements) {
-    const result = backgroundTone(getBackgroundColor(element, { fallback }));
+    const { backgroundColors } = resolveBackgrounds(element, fallback);
+    const withBlack = Math.min(
+      ...backgroundColors.map((color) => contrastRatio("#000", color))
+    );
+    const withWhite = Math.min(
+      ...backgroundColors.map((color) => contrastRatio("#fff", color))
+    );
     element.classList.remove(lightClass, darkClass);
-    element.classList.add(result === "light" ? lightClass : darkClass);
+    element.classList.add(withBlack >= withWhite ? lightClass : darkClass);
   }
   return elements;
 }
 var colorBrightness = backgroundTone;
 var colourBrightness = backgroundTone;
 var analyseColour = analyzeColor;
+var analyseGradient = analyzeGradient;
 var parseColour = parseColor;
 var bestTextColour = bestTextColor;
 var compositeColours = compositeColors;
@@ -2101,9 +2232,11 @@ var analysePalette = analyzePalette;
 export {
   analyseColour,
   analyseElement,
+  analyseGradient,
   analysePalette,
   analyzeColor,
   analyzeElement,
+  analyzeGradient,
   analyzePalette,
   applyBackgroundTone,
   applyColorBrightness,
@@ -2119,7 +2252,9 @@ export {
   contrastRatio,
   getBackgroundColor,
   getBackgroundColour,
+  gradientTone,
   meetsContrast,
   parseColor,
-  parseColour
+  parseColour,
+  parseGradient
 };

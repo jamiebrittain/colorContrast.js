@@ -1,5 +1,13 @@
 # Changelog
 
+## 2.1.0 — 2026-08-09
+
+- Added gradient support with worst-case, per-stop WCAG analysis: `parseGradient`, `analyzeGradient`, and `gradientTone` (plus the `analyseGradient` alias).
+- `contrastRatio`, `meetsContrast`, and `bestTextColor` now accept CSS gradients as backgrounds and report the weakest stop.
+- `analyzeElement` and `applyBackgroundTone` now account for gradient `background-image` layers on the element and its ancestors, compositing translucent stops over the underlying background.
+- `analyzeElement` now returns `backgroundColors` (the candidate backgrounds it checked) and `unsupportedBackgrounds` (background layers it cannot analyze, such as `url()` images).
+- Documented the stop-based heuristic and its limits: stop geometry, `background-size`/`position` cropping, and non-sRGB interpolation spaces are not evaluated.
+
 ## 2.0.0 — 2026-07-13
 
 - Rebuilt the project as colorContrast.js, a browser-ready ES module with compatibility aliases for the original plugin names.
